@@ -6,25 +6,28 @@ import logging
 logger = logging.getLogger(__name__)
 
 class DumpManager:
-    def __init__(self, dumps_dir: str = '/app/dumps'):
-        self.dumps_dir = dumps_dir
-        os.makedirs(dumps_dir, exist_ok=True)
+    def __init__(self, dumps_dir: str = '/dumps'):
+        
+        self.dumps_dir = os.getenv('DUMP_DIR', dumps_dir)
+        os.makedirs(self.dumps_dir, exist_ok=True)
     
     async def create_dump(self):
         """Create PostgreSQL database dump"""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         dump_file = os.path.join(self.dumps_dir, f'autoria_dump_{timestamp}.sql')
         
-        db_host = os.getenv('DB_HOST', 'localhost')
-        db_port = os.getenv('DB_PORT', '5432')
-        db_name = os.getenv('DB_NAME', 'autoria')
-        db_user = os.getenv('DB_USER', 'autoria_user')
-        db_password = os.getenv('DB_PASSWORD', 'autoria_password')
+        
+        db_host = os.getenv('POSTGRES_HOST', 'db')
+        db_port = os.getenv('POSTGRES_PORT', '5432')
+        db_name = os.getenv('POSTGRES_DB', 'autoria')
+        db_user = os.getenv('POSTGRES_USER', 'autoria_user')
+        db_password = os.getenv('POSTGRES_PASSWORD', 'strongpassword123')
         
         env = os.environ.copy()
         env['PGPASSWORD'] = db_password
         
-        cmd = f'pg_dump -h {db_host} -p {db_port} -U {db_user} -d {db_name} -F p -f {dump_file}'
+        
+        cmd = f'pg_dump -h {db_host} -p {db_port} -U {db_user} -d {db_name} -F p -f "{dump_file}"'
         
         try:
             process = await asyncio.create_subprocess_shell(

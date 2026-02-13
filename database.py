@@ -1,91 +1,98 @@
-import asyncpg
+import logging
 import os
-from typing import Optional
+from typing import Dict
 
-class Database:
-    def __init__(self):
-        self.pool: Optional[asyncpg.Pool] = None
+import asyncpg
+from dotenv import load_dotenv
+
+load_dotenv()
+log = logging.getLogger("autoria")
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/autoria")
+
+
+CREATE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS cars (
+    id              SERIAL PRIMARY KEY,
+    url             TEXT UNIQUE NOT NULL,
+    title           TEXT,
+    price_usd       NUMERIC,
+    odometer        INTEGER,
+    username        TEXT,
+    phone_number    BIGINT NOT NULL,        -- never null: fallback = "38000" + car_id
+    image_url       TEXT,
+    images_count    INTEGER,
+    car_number      TEXT,
+    car_vin         TEXT,
+    datetime_found  TIMESTAMP DEFAULT NOW()
+);
+"""
+
+UPSERT_SQL = """
+INSERT INTO cars (url, title, price_usd, odometer, username, phone_number,
+                  image_url, images_count, car_number, car_vin)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+ON CONFLICT (url) DO UPDATE SET
+    title          = EXCLUDED.title,
+    price_usd      = EXCLUDED.price_usd,
+    odometer       = EXCLUDED.odometer,
+    username       = EXCLUDED.username,
+    phone_number   = EXCLUDED.phone_number,
+    image_url      = EXCLUDED.image_url,
+    images_count   = EXCLUDED.images_count,
+    car_number     = EXCLUDED.car_number,
+    car_vin        = EXCLUDED.car_vin
+RETURNING (xmax = 0) AS is_insert;
+"""
+
+
+async def create_pool() -> asyncpg.Pool:
+    """Create and return the shared connection pool."""
+    return await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
+
+
+async def init_db(pool: asyncpg.Pool) -> None:
+    """Create table if it doesn't exist."""
+    async with pool.acquire() as conn:
+        await conn.execute(CREATE_TABLE_SQL)
+
+
+async def save_car(pool: asyncpg.Pool, d: Dict) -> bool:
+    """Upsert one car. Returns True if it was a new insert.
+
+    Column → parameter mapping is explicit ($N comments) so any future
+    column addition is immediately visible as a positional shift.
+    """
+    # ── Mandatory field guards 
+    if not d.get("url"):
+        log.error("save_car: record has no URL — skipping")
+        return False
+
+    if not d.get("title"):
+        log.warning("save_car: no title for %s — using 'N/A'", d["url"])
+        d["title"] = "N/A"
+
+
+    if not d.get("phone_number"):
+        import re as _re
+        m = _re.search(r"_(\d+)\.html$", d.get("url", ""))
+        car_id = m.group(1) if m else "0"
+        d["phone_number"] = int(f"38000{car_id}")
+        log.warning("save_car: phone fallback for %s → %s", d["url"], d["phone_number"])
+
+    params = (
+        d["url"],            
+        d["title"],          
+        d["price_usd"],      
+        d["odometer"],       
+        d["username"],       
+        d["phone_number"],   
+        d["image_url"],      
+        d["images_count"],   
+        d["car_number"],    
+        d["car_vin"],        
         
-    async def connect(self):
-        """Create database connection pool"""
-        self.pool = await asyncpg.create_pool(
-            host=os.getenv('DB_HOST', 'localhost'),
-            port=int(os.getenv('DB_PORT', 5432)),
-            database=os.getenv('DB_NAME', 'autoria'),
-            user=os.getenv('DB_USER', 'autoria_user'),
-            password=os.getenv('DB_PASSWORD', 'autoria_password'),
-            min_size=5,
-            max_size=20
-        )
-        await self.init_db()
-        
-    async def init_db(self):
-        """Initialize database schema"""
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS cars (
-                    id SERIAL PRIMARY KEY,
-                    url TEXT UNIQUE NOT NULL,
-                    title TEXT,
-                    price_usd NUMERIC,
-                    odometer INTEGER,
-                    username TEXT,
-                    phone_number TEXT,
-                    image_url TEXT,
-                    images_count INTEGER,
-                    car_number TEXT,
-                    car_vin TEXT,
-                    datetime_found TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            await conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_url ON cars(url);
-                CREATE INDEX IF NOT EXISTS idx_datetime_found ON cars(datetime_found);
-            ''')
-    
-    async def insert_or_update_car(self, car_data: dict) -> bool:
-        """Insert new car or update if exists. Returns True if inserted, False if updated"""
-        async with self.pool.acquire() as conn:
-            result = await conn.fetchrow(
-                'SELECT id FROM cars WHERE url = $1',
-                car_data['url']
-            )
-            
-            if result:
-                await conn.execute('''
-                    UPDATE cars SET
-                        title = $2,
-                        price_usd = $3,
-                        odometer = $4,
-                        username = $5,
-                        phone_number = $6,
-                        image_url = $7,
-                        images_count = $8,
-                        car_number = $9,
-                        car_vin = $10,
-                        datetime_found = $11,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE url = $1
-                ''', car_data['url'], car_data.get('title'), car_data.get('price_usd'),
-                    car_data.get('odometer'), car_data.get('username'), car_data.get('phone_number'),
-                    car_data.get('image_url'), car_data.get('images_count'), car_data.get('car_number'),
-                    car_data.get('car_vin'), car_data.get('datetime_found'))
-                return False
-            else:
-                await conn.execute('''
-                    INSERT INTO cars (url, title, price_usd, odometer, username, phone_number, 
-                                    image_url, images_count, car_number, car_vin, datetime_found)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                ''', car_data['url'], car_data.get('title'), car_data.get('price_usd'),
-                    car_data.get('odometer'), car_data.get('username'), car_data.get('phone_number'),
-                    car_data.get('image_url'), car_data.get('images_count'), car_data.get('car_number'),
-                    car_data.get('car_vin'), car_data.get('datetime_found'))
-                return True
-    
-    async def close(self):
-        """Close database connection pool"""
-        if self.pool:
-            await self.pool.close()
+    )
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(UPSERT_SQL, *params)
+        return row["is_insert"] if row else False

@@ -20,16 +20,14 @@ services:
 
   scraper:
     build: .
-    restart: on-failure
+    restart: unless-stopped       
     env_file: .env
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - dumps:/dumps
-    # Wait for Postgres then run
-    command: >
-      sh -c "python scraper.py"
+    command: python main.py       # main.py owns the scheduler loop
 
 volumes:
   pg_data:

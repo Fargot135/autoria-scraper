@@ -4,8 +4,8 @@ import logging
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from database import Database
-from scraper import AutoRiaScraper
+from database import create_pool, init_db
+from scraper import run_scrape
 from dump_manager import DumpManager
 
 logging.basicConfig(
@@ -18,19 +18,15 @@ class AutoRiaApp:
     def __init__(self):
         load_dotenv()
         
-        self.db = Database()
+        self.pool = None
         self.dump_manager = DumpManager()
         self.scheduler = AsyncIOScheduler()
         
-        self.start_url = os.getenv('START_URL', 
-            'https://auto.ria.com/uk/search/?categories.main.id=1&indexName=auto,order_auto,newauto_search&country.import.usa.not=-1&price.currency=1&abroad.not=0&custom.not=1&page=0&size=100')
-        
-        scrape_time = os.getenv('SCRAPE_TIME', '12:00')
-        dump_time = os.getenv('DUMP_TIME', '12:00')
-        
-        # Parse times
-        scrape_hour, scrape_minute = map(int, scrape_time.split(':'))
-        dump_hour, dump_minute = map(int, dump_time.split(':'))
+        # Read hour and minute from .env
+        scrape_hour = int(os.getenv('SCRAPE_HOUR', '12'))
+        scrape_minute = int(os.getenv('SCRAPE_MINUTE', '0'))
+        dump_hour = int(os.getenv('DUMP_HOUR', '12'))
+        dump_minute = int(os.getenv('DUMP_MINUTE', '0'))
         
         # Schedule scraping
         self.scheduler.add_job(
@@ -50,16 +46,15 @@ class AutoRiaApp:
             replace_existing=True
         )
         
-        logger.info(f"Scraping scheduled at {scrape_time}")
-        logger.info(f"Database dump scheduled at {dump_time}")
+        logger.info(f"Scraping scheduled at {scrape_hour:02d}:{scrape_minute:02d}")
+        logger.info(f"Database dump scheduled at {dump_hour:02d}:{dump_minute:02d}")
     
     async def run_scraping(self):
         """Execute scraping task"""
         logger.info("Starting scheduled scraping...")
         try:
-            async with AutoRiaScraper(self.start_url, max_concurrent_requests=15) as scraper:
-                stats = await scraper.scrape_all(self.db)
-                logger.info(f"Scraping completed. Stats: {stats}")
+            stats = await run_scrape(self.pool)
+            logger.info(f"Scraping completed. Stats: {stats}")
         except Exception as e:
             logger.error(f"Error during scraping: {str(e)}", exc_info=True)
     
@@ -79,17 +74,27 @@ class AutoRiaApp:
         """Main application loop"""
         logger.info("Initializing AutoRia scraper application...")
         
-        # Connect to database
-        await self.db.connect()
-        logger.info("Database connected")
+        # Create database pool
+        self.pool = await create_pool()
+        logger.info("Database pool created")
         
-        # Run initial scraping on startup
-        logger.info("Running initial scraping on startup...")
-        await self.run_scraping()
+        # Initialize database schema
+        await init_db(self.pool)
+        logger.info("Database initialized")
         
-        # Run initial dump
-        logger.info("Running initial dump on startup...")
-        await self.run_dump()
+        # Check if we should run initial scraping (useful flag for testing)
+        run_on_startup = os.getenv('RUN_ON_STARTUP', 'false').lower() == 'true'
+        
+        if run_on_startup:
+            # Run initial scraping on startup
+            logger.info("Running initial scraping on startup...")
+            await self.run_scraping()
+            
+            # Run initial dump
+            logger.info("Running initial dump on startup...")
+            await self.run_dump()
+        else:
+            logger.info("Skipping initial scraping (RUN_ON_STARTUP=false). Waiting for scheduled time...")
         
         # Start scheduler
         self.scheduler.start()
@@ -102,7 +107,9 @@ class AutoRiaApp:
         except (KeyboardInterrupt, SystemExit):
             logger.info("Shutting down...")
             self.scheduler.shutdown()
-            await self.db.close()
+            if self.pool:
+                await self.pool.close()
+                logger.info("Database pool closed")
 
 if __name__ == '__main__':
     app = AutoRiaApp()
