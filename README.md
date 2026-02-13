@@ -99,10 +99,10 @@ Create a `.env` file in the project root directory:
 POSTGRES_HOST=db
 POSTGRES_PORT=5432
 POSTGRES_USER=autoria_user
-POSTGRES_PASSWORD=strongpassword123
+POSTGRES_PASSWORD=
 POSTGRES_DB=autoria
 
-DATABASE_URL=postgresql://autoria_user:strongpassword123@db:5432/autoria
+DATABASE_URL=postgresql://user:password@host:port/dbname
 
 # ── Scraper ───────────────────────────────────────────────────
 START_URL=https://auto.ria.com/uk/search/?indexName=auto&category_id=1&price_ot=1&price_do=100000&page=0
